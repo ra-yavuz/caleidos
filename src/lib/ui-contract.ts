@@ -115,8 +115,24 @@ The host injects an object \`window.caleidos\` your script can call:
       current weather + forecast for lat/lon:
         { kind: "http", url: "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto" }
         -> data.current and data.daily.
-    Returns a Promise; await it. Handle rejection by showing a graceful fallback.
-    Build the full URL yourself with query params; do not pass { kind: "weather" }.
+    Returns a Promise; await it. Build the full URL yourself with query params;
+    do not pass { kind: "weather" }.
+
+# NEVER spin forever (critical for any component that loads or fetches)
+
+If your component shows a loading/spinner state, it MUST always leave it:
+- ALWAYS wrap fetchData (and any async work) in try/catch, or use .catch(), and
+  in the error path HIDE the spinner and show a short error message plus a
+  "retry" control the user can click to try again. Never leave the spinner up on
+  failure.
+- Add your own timeout: if data has not arrived within ~10 seconds, treat it as
+  a failure and show the error/retry state (e.g. Promise.race the fetch against a
+  setTimeout-reject). The host also times out after 30s, but you should fail
+  faster and visibly.
+- Render whatever you can immediately (the frame, labels, a placeholder) and fill
+  in fetched values when they arrive, so the component is never a blank spinner.
+- A clock or a component that uses { kind: "time" } should fall back to the
+  browser clock (new Date()) if the time fetch fails, and keep working.
 
 # Initial state
 
@@ -216,16 +232,33 @@ export function buildSrcdoc(modelHtml: string, savedState: string | null): strin
   return out;
 }
 
-// Prompt for generating a desktop BACKGROUND: a single CSS value, nothing else.
+// Prompt for generating a desktop BACKGROUND. The model returns EITHER a single
+// CSS value (for a static background) OR a complete HTML document (for an
+// animated / "living" wallpaper). The host detects which by whether the output
+// starts with "<".
 export const BACKGROUND_PROMPT = `
-You are the desktop appearance engine for caleiDOS. Output ONLY a single CSS
-value for the 'background' property of a full-screen element: a gradient, solid
-color, or layered background using inline data: URIs or CSS gradients. No SVG
-file, no HTML, no markdown, no quotes around the whole value, no explanation. It
-must be valid CSS assignable directly to element.style.background. Tasteful and
-atmospheric. Example:
-  linear-gradient(135deg, #1e3a5f 0%, #0f1b2d 100%)
-Output ONLY the CSS value.
+You are the desktop appearance engine for caleiDOS. The user wants a desktop
+background/wallpaper. Choose ONE of two output forms based on the request:
+
+1. STATIC: if a gradient or color suffices, output ONLY a single CSS value
+   assignable to element.style.background (a gradient, color, or layered CSS).
+   No quotes, no HTML, no markdown, no explanation. Example:
+     linear-gradient(135deg, #1e3a5f 0%, #0f1b2d 100%)
+
+2. ANIMATED ("living wallpaper"): if the request asks for motion (stars,
+   shooting stars, water reflections, particles, day/night, etc.), output ONE
+   complete, self-contained HTML document (HTML+CSS+JS) that fills the entire
+   screen and animates. Rules for the animated form:
+   - Start with <!DOCTYPE html> and end with </html>. Output ONLY the document.
+   - html and body: margin:0; width:100%; height:100%; overflow:hidden.
+   - It is a BACKGROUND: purely visual, non-interactive, no controls, no text UI.
+     It must NOT capture clicks (use pointer-events:none on overlays). Do NOT use
+     the caleidos bridge; do NOT call resize/close. It just animates full-screen.
+   - Use canvas or CSS animation. No external resources. Keep it efficient
+     (requestAnimationFrame, reasonable particle counts) so it does not peg CPU.
+
+Pick the form that matches the request. Output ONLY the CSS value OR the HTML
+document, nothing else.
 `.trim();
 
 // Prompt for generating a THEME token set: ONLY a JSON object.

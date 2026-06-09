@@ -23,45 +23,110 @@ export type RenderRequest = {
   user: string;
 };
 
-// --- subscription: agent-sdk one-shot (no key, uses claude auth login) ---
+// --- subscription: invoke the `claude` CLI in print mode (no key, uses the
+// `claude auth login` subscription) ---
+//
+// We do NOT use the agent-SDK's query() here. That runs a multi-turn AGENT loop
+// which made the model emit a component across 2-4 sequential round-trips
+// (measured 26-170s, with the long tail closing the socket). `claude -p` is a
+// single-shot completion (num_turns:1), which is what we want: one document, one
+// pass. We stream its stream-json output and yield the assistant text deltas.
 async function* streamSubscription(
   req: RenderRequest,
 ): AsyncGenerator<string> {
-  // Imported lazily so the apikey/hydra paths don't pay for loading the heavy
-  // agent SDK, and so a missing binary only errors when this path is used.
-  const { query } = await import("@anthropic-ai/claude-agent-sdk");
+  const { spawn } = await import("node:child_process");
 
-  // One-shot generation: no tools, no file writes. We only want the model's
-  // text. The UI contract goes in systemPrompt (append to the preset), the
-  // per-turn instruction is the prompt. permissionMode is irrelevant with no
-  // tools, but we disable tool use by not granting any.
-  const iterator = query({
-    prompt: req.user,
-    options: {
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append: req.system,
-      },
-      // No tools: pure text generation. The model cannot touch the filesystem.
-      allowedTools: [],
-      permissionMode: "bypassPermissions",
-      maxTurns: 1,
-    },
+  const args = [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose", // required for stream-json
+    "--append-system-prompt",
+    req.system,
+  ];
+  const model = process.env.CALEIDOS_SUBSCRIPTION_MODEL;
+  if (model) args.push("--model", model);
+
+  const child = spawn("claude", args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: process.env,
+  });
+  // the prompt goes in on stdin (avoids the "no stdin data" wait and arg limits)
+  child.stdin.write(req.user);
+  child.stdin.end();
+
+  let stderr = "";
+  child.stderr.on("data", (d) => {
+    stderr += d.toString();
   });
 
-  for await (const message of iterator as AsyncIterable<unknown>) {
-    const m = message as Record<string, unknown>;
-    if (m.type === "assistant") {
-      const inner = m.message as { content?: unknown[] } | undefined;
+  // Bridge the child's stdout (newline-delimited JSON) into this async generator.
+  const queue: string[] = [];
+  let resolveWaiter: (() => void) | null = null;
+  let done = false;
+  let failed: Error | null = null;
+  let buffer = "";
+
+  function handleLine(line: string) {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(trimmed);
+    } catch {
+      return; // ignore non-JSON noise
+    }
+    if (msg.type === "assistant") {
+      const inner = msg.message as { content?: unknown[] } | undefined;
       const content = Array.isArray(inner?.content) ? inner!.content : [];
       for (const raw of content) {
         const block = raw as Record<string, unknown>;
         if (block.type === "text" && typeof block.text === "string") {
-          yield block.text;
+          queue.push(block.text);
         }
       }
+    } else if (msg.type === "result" && msg.is_error) {
+      failed = new Error(
+        typeof msg.result === "string" ? msg.result : "claude returned an error",
+      );
     }
+    resolveWaiter?.();
+  }
+
+  child.stdout.on("data", (d) => {
+    buffer += d.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) handleLine(line);
+    resolveWaiter?.();
+  });
+  child.on("close", (code) => {
+    if (buffer) handleLine(buffer);
+    if (code !== 0 && !failed && queue.length === 0) {
+      failed = new Error(
+        "claude exited with code " + code + (stderr ? ": " + stderr.slice(0, 300) : ""),
+      );
+    }
+    done = true;
+    resolveWaiter?.();
+  });
+  child.on("error", (e) => {
+    failed = e instanceof Error ? e : new Error(String(e));
+    done = true;
+    resolveWaiter?.();
+  });
+
+  for (;;) {
+    if (queue.length > 0) {
+      yield queue.shift() as string;
+      continue;
+    }
+    if (failed) throw failed;
+    if (done) return;
+    await new Promise<void>((resolve) => {
+      resolveWaiter = resolve;
+    });
+    resolveWaiter = null;
   }
 }
 

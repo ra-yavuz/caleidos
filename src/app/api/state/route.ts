@@ -138,6 +138,10 @@ export async function POST(req: Request) {
           body.desktop.background !== undefined
             ? body.desktop.background
             : prev.background,
+        backgroundHtml:
+          body.desktop.backgroundHtml !== undefined
+            ? body.desktop.backgroundHtml
+            : prev.backgroundHtml ?? null,
         theme:
           body.desktop.theme !== undefined ? body.desktop.theme : prev.theme,
         updatedAt: now,

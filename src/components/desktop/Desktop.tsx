@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ComponentSurface } from "./ComponentSurface";
+import { TerminalOverlay } from "./TerminalOverlay";
 import { Dock } from "./Dock";
 import { Settings } from "./Settings";
 import { PromptBar } from "@/components/chat/PromptBar";
+import { useGeneration } from "@/hooks/useGeneration";
 import type {
   Surface,
   DesktopConfig,
@@ -19,74 +21,54 @@ type BootSnapshot = {
   settings: OsSettings;
 };
 
-// An open surface on the desktop. Everything is a model-created component; apps
-// and widgets differ only in default size and that widgets are desktop-resident.
+// An open surface. Everything is a model-created component; apps and widgets
+// differ only in default size and that widgets are desktop-resident. `html` is
+// null while Desktop is still generating it (shown in the terminal overlay).
 type OpenSurface = {
   id: string;
   kind: SurfaceKind;
   name: string;
   description: string;
-  initialState: string | null;
-  initialHtml: string | null;
+  html: string | null;
+  state: string | null;
   pos: { x: number; y: number };
   zIndex: number;
 };
 
 let zCounter = 10;
 
-function slugify(name: string): string {
-  return (
-    name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) ||
-    "app"
-  );
-}
-
-// Derive a short, human title from a free-text request. Strips polite filler and
-// leading verbs, drops anything after a clause break, caps at a few words. The
-// full text is still passed to the model as the description.
-function shortName(text: string, kind: "app" | "widget"): string {
-  let t = text.trim();
-  // cut at the first clause boundary (so "weather and time with a nice design
-  // please" -> "weather and time")
-  t = t.split(/\b(?:with|that|which|so that|and i|, |\. )\b/i)[0];
-  t = t
-    .replace(
-      /^(please\s+)?(can you\s+|could you\s+|i(?:'| a)?d? ?(?:like|want|need)(?: a| an| to)?\s+|make me\s+|build me\s+|give me\s+|add\s+|new\s+|open\s+|create\s+|a\s+|an\s+|the\s+)+/i,
-      "",
-    )
-    .replace(/\bwidget\b/gi, "")
-    .replace(/\bplease\b/gi, "")
-    .replace(/[^\w\s-]/g, "")
-    .trim();
-  const words = t.split(/\s+/).filter(Boolean).slice(0, 4);
-  const name = words.join(" ").trim();
-  return name || (kind === "widget" ? "widget" : "app");
-}
-
 export function Desktop() {
+  const { gen, generate } = useGeneration();
   const [open, setOpen] = useState<OpenSurface[]>([]);
-  const [stored, setStored] = useState<Surface[]>([]); // persisted surfaces (for dock + restore)
+  const [stored, setStored] = useState<Surface[]>([]);
   const [desktop, setDesktop] = useState<DesktopConfig>({
     background: null,
     theme: null,
     updatedAt: "",
   });
   const [provider, setProvider] = useState<ProviderId>("subscription");
+  const providerRef = useRef<ProviderId>("subscription");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [booting, setBooting] = useState(true);
   const cascade = useRef(0);
 
-  // Boot: load persisted OS. Widgets auto-open (desktop-resident); apps go to
-  // the dock and open on click.
+  useEffect(() => {
+    providerRef.current = provider;
+  }, [provider]);
+
+  // Boot: load persisted OS. Widgets auto-open with their stored HTML (instant,
+  // no model call). Apps go to the dock.
   useEffect(() => {
     fetch("/api/state")
       .then((r) => r.json())
       .then((snap: BootSnapshot) => {
         setDesktop(snap.desktop);
-        if (snap.settings?.provider) setProvider(snap.settings.provider);
+        if (snap.settings?.provider) {
+          setProvider(snap.settings.provider);
+          providerRef.current = snap.settings.provider;
+        }
         const surfaces = snap.surfaces || [];
         setStored(surfaces);
-        // auto-open widgets
         const widgets = surfaces.filter((s) => s.kind === "widget");
         setOpen(
           widgets.map((w, i) => ({
@@ -94,8 +76,8 @@ export function Desktop() {
             kind: "widget" as const,
             name: w.name,
             description: w.description,
-            initialState: w.state,
-            initialHtml: w.html,
+            html: w.html,
+            state: w.state,
             pos: w.pos ?? { x: 40 + i * 30, y: 60 + i * 30 },
             zIndex: ++zCounter,
           })),
@@ -105,6 +87,17 @@ export function Desktop() {
       .finally(() => setBooting(false));
   }, []);
 
+  const persistSurface = useCallback(
+    (s: { id: string; kind: SurfaceKind; name: string; description: string; state: string | null; html: string | null; pos?: { x: number; y: number } }) => {
+      fetch("/api/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "surface", surface: s }),
+      }).catch(() => {});
+    },
+    [],
+  );
+
   const focus = useCallback((id: string) => {
     setOpen((prev) => prev.map((s) => (s.id === id ? { ...s, zIndex: ++zCounter } : s)));
   }, []);
@@ -113,103 +106,129 @@ export function Desktop() {
     setOpen((prev) => prev.filter((s) => s.id !== id));
   }, []);
 
-  const persist = useCallback(
-    (id: string, state: string | null, html: string) => {
+  // Component saved its state (instant, local). Persist alongside current html.
+  const save = useCallback(
+    (id: string, state: string | null) => {
       setOpen((prev) => {
         const s = prev.find((o) => o.id === id);
-        if (s) {
-          fetch("/api/state", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              type: "surface",
-              surface: {
-                kind: s.kind,
-                id,
-                name: s.name,
-                description: s.description,
-                state,
-                html: html || s.initialHtml,
-                pos: s.pos,
-              },
-            }),
-          }).catch(() => {});
-        }
+        if (s) persistSurface({ ...s, state });
+        return prev.map((o) => (o.id === id ? { ...o, state } : o));
+      });
+    },
+    [persistSurface],
+  );
+
+  // Host-mediated fetch for a component's caleidos.fetchData.
+  const fetchData = useCallback(async (spec: unknown): Promise<unknown> => {
+    const r = await fetch("/api/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ spec }),
+    });
+    return r.json();
+  }, []);
+
+  // Generate (create or change) a component's HTML via the terminal overlay,
+  // then write it onto the surface. The only place the model is called for a
+  // component.
+  const generateComponent = useCallback(
+    async (s: OpenSurface, change?: string) => {
+      try {
+        const html = await generate(
+          `${change ? "updating" : "creating"} ${s.name}...`,
+          {
+            target: "component",
+            surfaceKind: s.kind,
+            appName: s.name,
+            appDescription: s.description,
+            currentState: s.state,
+            action: change ? "change" : "__init__",
+            request: change,
+            provider: providerRef.current,
+          },
+        );
+        setOpen((prev) =>
+          prev.map((o) => (o.id === s.id ? { ...o, html } : o)),
+        );
+        persistSurface({ ...s, html });
+        setStored((prev) =>
+          prev.some((p) => p.id === s.id)
+            ? prev.map((p) => (p.id === s.id ? { ...p, html } : p))
+            : s.kind === "app"
+              ? [...prev, { kind: s.kind, id: s.id, name: s.name, description: s.description, state: s.state, html, updatedAt: "" }]
+              : prev,
+        );
+      } catch (e) {
+        // surface the real error to the user
+        alert(`could not ${change ? "change" : "create"} ${s.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [generate, persistSurface],
+  );
+
+  const change = useCallback(
+    (id: string, request: string) => {
+      setOpen((prev) => {
+        const s = prev.find((o) => o.id === id);
+        if (s) generateComponent(s, request);
         return prev;
       });
-      // refresh the stored list so the dock reflects new apps
-      setStored((prev) =>
-        prev.some((p) => p.id === id)
-          ? prev.map((p) => (p.id === id ? { ...p, state, html: html || p.html } : p))
-          : prev,
-      );
     },
-    [],
+    [generateComponent],
   );
 
   const openSurface = useCallback(
     (name: string, kind: SurfaceKind, description: string, existing?: Surface) => {
       const id = existing?.id ?? uniqueId(slugify(name), open);
-      setOpen((prev) => {
-        if (prev.some((s) => s.id === id)) {
-          return prev.map((s) => (s.id === id ? { ...s, zIndex: ++zCounter } : s));
-        }
-        const n = cascade.current++;
-        return [
-          ...prev,
-          {
-            id,
-            kind,
-            name,
-            description,
-            initialState: existing?.state ?? null,
-            initialHtml: existing?.html ?? null,
-            pos:
-              kind === "widget"
-                ? existing?.pos ?? { x: 40 + n * 30, y: 60 + n * 30 }
-                : { x: 120 + n * 36, y: 90 + n * 36 },
-            zIndex: ++zCounter,
-          },
-        ];
-      });
-      // ensure it shows in the stored list (dock) for apps
-      if (kind === "app" && !stored.some((s) => s.id === id)) {
-        setStored((prev) => [
-          ...prev,
-          { kind, id, name, description, state: null, html: null, updatedAt: "" },
-        ]);
+      if (open.some((s) => s.id === id)) {
+        focus(id);
+        return;
+      }
+      const n = cascade.current++;
+      const surface: OpenSurface = {
+        id,
+        kind,
+        name,
+        description,
+        html: existing?.html ?? null,
+        state: existing?.state ?? null,
+        pos:
+          kind === "widget"
+            ? existing?.pos ?? { x: 40 + n * 30, y: 60 + n * 30 }
+            : { x: 120 + n * 36, y: 90 + n * 36 },
+        zIndex: ++zCounter,
+      };
+      setOpen((prev) => [...prev, surface]);
+      if (!surface.html) {
+        // needs creation: stream it in the terminal overlay
+        generateComponent(surface);
       }
     },
-    [open, stored],
+    [open, focus, generateComponent],
   );
 
   const generateDesktop = useCallback(
     async (target: "background" | "theme", request: string) => {
-      const resp = await fetch("/api/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, request, provider }),
-      });
-      if (!resp.ok || !resp.body) return;
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let out = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        out += decoder.decode(value, { stream: true });
-      }
-      if (out.includes("CALEIDOS_ERROR")) return;
-      if (target === "background") {
-        const bg = out.trim();
-        setDesktop((d) => ({ ...d, background: bg }));
-        fetch("/api/state", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "desktop", desktop: { background: bg } }),
-        }).catch(() => {});
-      } else {
-        try {
+      try {
+        const out = await generate(
+          target === "background" ? "painting the desktop..." : "theming the desktop...",
+          { target, request, provider: providerRef.current },
+        );
+        if (target === "background") {
+          const bg = out.trim();
+          // The model returns either a CSS value or a full HTML document (an
+          // animated "living wallpaper"). Detect by the leading "<".
+          const isHtml = /^\s*<(?:!doctype|html|body|div|canvas|svg|style)/i.test(bg);
+          const desktopPatch = isHtml
+            ? { backgroundHtml: bg }
+            : { background: bg, backgroundHtml: null };
+          setDesktop((d) => ({ ...d, ...desktopPatch }));
+          fetch("/api/state", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type: "desktop", desktop: desktopPatch }),
+          }).catch(() => {});
+        } else {
           const theme = JSON.parse(out.trim());
           setDesktop((d) => ({ ...d, theme }));
           fetch("/api/state", {
@@ -217,23 +236,27 @@ export function Desktop() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ type: "desktop", desktop: { theme } }),
           }).catch(() => {});
-        } catch {
-          // not JSON; ignore
         }
+      } catch (e) {
+        alert(`could not set ${target}: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
-    [provider],
+    [generate],
   );
 
-  // Classify the typed request into an intent. The full text is the description
-  // (carried to the model); a short label is derived for the title/dock/id.
   const handlePrompt = useCallback(
     (text: string) => {
       const t = text.trim();
       const lower = t.toLowerCase();
-      if (/^(set |change )?(the )?(background|wallpaper)\b/.test(lower)) {
+      // Intent keywords matched ANYWHERE in the request (not just the start), so
+      // natural phrasing like "please make the wallpaper an animated night sky"
+      // routes correctly. Background/theme take precedence over the widget/app
+      // default.
+      const mentionsBackground = /\b(background|wallpaper|desktop\s+background)\b/.test(lower);
+      const mentionsTheme = /\b(theme|color\s*scheme|colour\s*scheme|accent\s+colou?r)\b/.test(lower);
+      if (mentionsBackground) {
         generateDesktop("background", t);
-      } else if (/^(set |change )?(the )?theme\b/.test(lower) || lower.startsWith("theme:")) {
+      } else if (mentionsTheme) {
         generateDesktop("theme", t);
       } else if (/\bwidget\b/.test(lower)) {
         openSurface(shortName(t, "widget"), "widget", t);
@@ -246,6 +269,7 @@ export function Desktop() {
 
   const saveProvider = useCallback((p: ProviderId) => {
     setProvider(p);
+    providerRef.current = p;
     fetch("/api/state", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -253,7 +277,7 @@ export function Desktop() {
     }).catch(() => {});
   }, []);
 
-  const forget = useCallback((id: string, _kind: "app" | "widget") => {
+  const forget = useCallback((id: string) => {
     fetch(`/api/state?surface=${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
     setStored((prev) => prev.filter((s) => s.id !== id));
     setOpen((prev) => prev.filter((s) => s.id !== id));
@@ -267,7 +291,17 @@ export function Desktop() {
 
   return (
     <div className="fixed inset-0 overflow-hidden" style={{ background: bg, ...themeStyle }}>
-      {/* menubar */}
+      {/* animated "living wallpaper": full-screen, non-interactive, behind all */}
+      {desktop.backgroundHtml && (
+        <iframe
+          aria-hidden
+          tabIndex={-1}
+          sandbox="allow-scripts"
+          srcDoc={desktop.backgroundHtml}
+          className="pointer-events-none absolute inset-0 z-0 h-full w-full border-0"
+          title="wallpaper"
+        />
+      )}
       <div
         className="pointer-events-none fixed left-0 right-0 top-0 z-[9800] flex h-7 items-center justify-between px-4 text-xs font-medium"
         style={{ color: "var(--menubar-text, rgba(255,255,255,0.85))" }}
@@ -281,26 +315,28 @@ export function Desktop() {
         </div>
       </div>
 
-      {/* all open surfaces (apps + widgets), chromeless */}
       {open.map((s) => (
         <ComponentSurface
           key={s.id}
           surfaceId={s.id}
           kind={s.kind}
           name={s.name}
-          description={s.description}
-          provider={provider}
-          initialState={s.initialState}
-          initialHtml={s.initialHtml}
+          html={s.html}
+          savedState={s.state}
           pos={s.pos}
           zIndex={s.zIndex}
-          onClose={close}
           onFocus={focus}
-          onPersist={persist}
+          onClose={close}
+          onSave={save}
+          onChange={change}
+          onFetch={fetchData}
         />
       ))}
 
-      {!booting && open.length === 0 && (
+      {/* the desktop-as-terminal during any generation */}
+      <TerminalOverlay active={gen.active} label={gen.label} text={gen.text} />
+
+      {!booting && !gen.active && open.filter((s) => s.html).length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <p className="text-center text-sm text-white/50">
             an OS that imagines itself.
@@ -324,12 +360,36 @@ export function Desktop() {
           onProvider={saveProvider}
           storedApps={storedApps}
           widgets={stored.filter((s) => s.kind === "widget")}
-          onForget={forget}
+          onForget={(id) => forget(id)}
           onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>
   );
+}
+
+function slugify(name: string): string {
+  return (
+    name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "app"
+  );
+}
+
+// Short title from a free-text request: strip polite filler and leading verbs,
+// cut at a clause boundary, cap at a few words. Full text is still the description.
+function shortName(text: string, kind: "app" | "widget"): string {
+  let t = text.trim();
+  t = t.split(/\b(?:with|that|which|so that|and i|, |\. )\b/i)[0];
+  t = t
+    .replace(
+      /^(please\s+)?(can you\s+|could you\s+|i(?:'| a)?d? ?(?:like|want|need)(?: a| an| to)?\s+|make me\s+|build me\s+|give me\s+|add\s+|new\s+|open\s+|create\s+|a\s+|an\s+|the\s+)+/i,
+      "",
+    )
+    .replace(/\bwidget\b/gi, "")
+    .replace(/\bplease\b/gi, "")
+    .replace(/[^\w\s-]/g, "")
+    .trim();
+  const words = t.split(/\s+/).filter(Boolean).slice(0, 4);
+  return words.join(" ").trim() || (kind === "widget" ? "widget" : "app");
 }
 
 function uniqueId(base: string, open: OpenSurface[]): string {

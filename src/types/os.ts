@@ -24,9 +24,12 @@ export type Surface = {
 // Desktop appearance: a generated background plus a theme token set the shell
 // reads. Both model-creatable, neither requires editing framework code.
 export type DesktopConfig = {
-  // background is a CSS value (gradient, color) or an inline SVG/data-URI the
-  // shell applies to the desktop root.
+  // background is a CSS value (gradient, color) applied to the desktop root.
   background: string | null;
+  // OR an animated "living wallpaper": a full HTML document rendered in a
+  // full-screen, non-interactive iframe behind everything. When set, it takes
+  // visual precedence over `background`.
+  backgroundHtml?: string | null;
   // theme tokens the shell maps to CSS variables (accent, surface, text, etc.)
   theme: Record<string, string> | null;
   updatedAt: string;
