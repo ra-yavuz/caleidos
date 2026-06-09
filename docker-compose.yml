@@ -11,19 +11,24 @@ services:
     environment:
       - NODE_ENV=development
       - NEXT_TELEMETRY_DISABLED=1
-      # Set to 1 if hot reload does not pick up agent-written files (Docker
-      # overlay/inotify quirks). Read by next.config via the dev watcher.
-      - WATCHPACK_POLLING=${WATCHPACK_POLLING:-}
+      # Optional: API-key provider (fast Haiku path). Subscription + local work
+      # without it. Set in a .env file next to this compose to enable.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Optional: point the local provider at your hydra-llm port on the host.
+      - HYDRA_BASE_URL=${HYDRA_BASE_URL:-http://host.docker.internal:18080/v1}
+      - HYDRA_MODEL=${HYDRA_MODEL:-local}
+    # Lets the container reach hydra-llm (and anything else) running on the host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      # Bind mount: apps the agent writes into /app/apps land on the host disk
-      # and show up in git.
+      # Bind mount: the project, including os-state/ where the OS persists every
+      # app, widget, the desktop background/theme, and settings. Lands on disk.
       - .:/app
       # Anonymous volume so the host (empty) node_modules does not shadow the
       # container-installed dependencies.
       - /app/node_modules
       # Named volume for the container home: persists the `claude auth login`
-      # OAuth credentials and anything the agent writes outside /app, across
-      # `docker compose down`/`up`.
+      # OAuth credentials (the subscription provider) across down/up.
       - caleidos-home:/home/caleidos
     stdin_open: true
     tty: true

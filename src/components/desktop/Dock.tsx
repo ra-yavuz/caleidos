@@ -1,17 +1,19 @@
 "use client";
 
 import { LayoutGrid } from "lucide-react";
-import type { AppMeta } from "@/types/app-registry";
+import type { Surface } from "@/types/os";
 
-// Minimal dock: one tile per built app. Phase 3 adds magnification.
+// Dock of stored apps. Clicking one (re)opens its window, restoring its state
+// and showing its stored HTML instantly. Driven by persisted apps, not a live
+// disk poll.
 export function Dock({
   apps,
-  openSlugs,
+  openIds,
   onOpen,
 }: {
-  apps: AppMeta[];
-  openSlugs: Set<string>;
-  onOpen: (slug: string, title: string) => void;
+  apps: Surface[];
+  openIds: Set<string>;
+  onOpen: (app: Surface) => void;
 }) {
   if (apps.length === 0) return null;
 
@@ -20,17 +22,23 @@ export function Dock({
       <div className="flex items-end gap-2 rounded-2xl border border-white/20 bg-white/10 px-3 py-2 shadow-2xl backdrop-blur-xl">
         {apps.map((app) => (
           <button
-            key={app.slug}
-            onClick={() => onOpen(app.slug, app.title)}
-            title={app.description || app.title}
+            key={app.id}
+            onClick={() => onOpen(app)}
+            title={app.description || app.name}
             className="group relative flex flex-col items-center"
           >
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-400 to-fuchsia-500 text-white shadow-md transition-transform group-hover:-translate-y-1">
+            <div
+              className="flex h-12 w-12 items-center justify-center rounded-xl text-white shadow-md transition-transform group-hover:-translate-y-1"
+              style={{
+                background:
+                  "var(--accent, linear-gradient(to bottom right, #818cf8, #d946ef))",
+              }}
+            >
               <LayoutGrid className="h-5 w-5" />
             </div>
             <span
               className={`mt-1 h-1 w-1 rounded-full ${
-                openSlugs.has(app.slug) ? "bg-white" : "bg-transparent"
+                openIds.has(app.id) ? "bg-white" : "bg-transparent"
               }`}
             />
           </button>

@@ -31,3 +31,7 @@ next-env.d.ts
 # To treat them as scratch instead, uncomment:
 # /apps/*
 # !/apps/.gitkeep
+
+# persisted hallucinated-OS app state
+/os-state/*
+!/os-state/.gitkeep
