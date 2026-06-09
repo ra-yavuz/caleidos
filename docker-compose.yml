@@ -1,0 +1,32 @@
+services:
+  caleidos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_TELEMETRY_DISABLED=1
+      # Set to 1 if hot reload does not pick up agent-written files (Docker
+      # overlay/inotify quirks). Read by next.config via the dev watcher.
+      - WATCHPACK_POLLING=${WATCHPACK_POLLING:-}
+    volumes:
+      # Bind mount: apps the agent writes into /app/apps land on the host disk
+      # and show up in git.
+      - .:/app
+      # Anonymous volume so the host (empty) node_modules does not shadow the
+      # container-installed dependencies.
+      - /app/node_modules
+      # Named volume for the container home: persists the `claude auth login`
+      # OAuth credentials and anything the agent writes outside /app, across
+      # `docker compose down`/`up`.
+      - caleidos-home:/home/caleidos
+    stdin_open: true
+    tty: true
+
+volumes:
+  caleidos-home:
