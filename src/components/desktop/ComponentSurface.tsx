@@ -19,11 +19,14 @@ export function ComponentSurface({
   savedState,
   pos,
   zIndex,
+  minimized,
   onFocus,
   onClose,
   onSave,
   onChange,
   onFetch,
+  onIcon,
+  onInstall,
 }: {
   surfaceId: string;
   kind: SurfaceKind;
@@ -32,11 +35,14 @@ export function ComponentSurface({
   savedState: string | null;
   pos: { x: number; y: number };
   zIndex: number;
+  minimized?: boolean;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   onSave: (id: string, state: string | null) => void;
   onChange: (id: string, request: string) => void;
   onFetch: (spec: unknown) => Promise<unknown>;
+  onIcon: (id: string, icon: string) => void;
+  onInstall: (app: { name?: string; description?: string; icon?: string }) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const controls = useDragControls();
@@ -64,6 +70,8 @@ export function ComponentSurface({
         spec?: unknown;
         w?: number;
         h?: number;
+        icon?: string;
+        app?: { name?: string; description?: string; icon?: string };
       };
       switch (d?.type) {
         case "CALEIDOS_CLOSE":
@@ -74,6 +82,12 @@ export function ComponentSurface({
           break;
         case "CALEIDOS_CHANGE":
           onChange(surfaceId, d.request || "update this component");
+          break;
+        case "CALEIDOS_ICON":
+          if (d.icon) onIcon(surfaceId, d.icon);
+          break;
+        case "CALEIDOS_INSTALL":
+          if (d.app) onInstall(d.app);
           break;
         case "CALEIDOS_RESIZE":
           if (d.w && d.h && d.w > 60 && d.h > 40 && d.w < 1600 && d.h < 1200) {
@@ -100,7 +114,7 @@ export function ComponentSurface({
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [surfaceId, onClose, onSave, onChange, onFetch]);
+  }, [surfaceId, onClose, onSave, onChange, onFetch, onIcon, onInstall]);
 
   // Until the HTML exists (first create still streaming in the terminal overlay),
   // render nothing on the desktop. The component appears only when ready.
@@ -114,7 +128,9 @@ export function ComponentSurface({
       dragMomentum={false}
       initial={{ x: pos.x, y: pos.y, opacity: 0, scale: 0.97 }}
       animate={{ opacity: 1, scale: 1 }}
-      style={{ zIndex }}
+      // Minimized: hide visually but keep the iframe mounted so the component's
+      // live state survives (display:none, not unmount).
+      style={{ zIndex, display: minimized ? "none" : undefined }}
       onPointerDown={() => onFocus(surfaceId)}
       className="absolute left-0 top-0"
     >

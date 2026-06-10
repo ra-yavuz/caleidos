@@ -15,10 +15,19 @@ export type Surface = {
   description: string; // identity carried to the model every turn
   state: string | null; // the component's JSON state blob (its memory)
   html: string | null; // last generated component HTML (so reopen is instant, no regen)
+  icon?: string | null; // distinct per-app icon: an inline <svg>...</svg> or an emoji
   // widgets carry a desktop position; apps use window cascade
   pos?: { x: number; y: number };
   size?: { w: number; h: number };
   updatedAt: string;
+};
+
+// A model-generated App Store listing (not yet installed). Pure data the store
+// panel renders; "install" turns it into a Surface (html generated on first open).
+export type AppListing = {
+  name: string;
+  description: string;
+  icon: string; // inline <svg> or emoji
 };
 
 // Desktop appearance: a generated background plus a theme token set the shell

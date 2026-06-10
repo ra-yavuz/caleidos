@@ -2,23 +2,25 @@ import {
   UI_CONTRACT_PROMPT,
   BACKGROUND_PROMPT,
   THEME_PROMPT,
+  APPSTORE_PROMPT,
+  PAGE_PROMPT,
 } from "@/lib/ui-contract";
 import { streamProvider, type ProviderId } from "@/lib/providers";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-// The model is invoked only to CREATE a component or CHANGE one on request (and
-// to generate a background/theme). Routine interaction runs locally in the
-// component, so there is no per-click call and no awareness log here.
+// The model is invoked only to CREATE/CHANGE a component, generate a
+// background/theme, return App Store listings for a search, or render a browser
+// page. All paths go through streamProvider so the local provider works too.
 type RenderBody = {
-  target?: "component" | "background" | "theme";
+  target?: "component" | "background" | "theme" | "appstore" | "page";
   surfaceKind?: "app" | "widget";
   appName?: string;
   appDescription?: string;
   currentState?: string | null; // carried so a change can preserve user data
   action?: string; // "__init__" to create, "change" for an explicit change
-  request?: string; // change wording, or background/theme instruction
+  request?: string; // change wording, background/theme/appstore/page query
   provider?: ProviderId;
 };
 
@@ -61,6 +63,14 @@ export async function POST(req: Request) {
   } else if (target === "theme") {
     system = THEME_PROMPT;
     user = body.request || "A coherent, tasteful theme.";
+  } else if (target === "appstore") {
+    system = APPSTORE_PROMPT;
+    user = "Search query: " + (body.request || "popular apps");
+  } else if (target === "page") {
+    system = PAGE_PROMPT;
+    user =
+      "Render the page for this address-bar query or URL: " +
+      (body.request || "home");
   } else {
     if (!body.appName) {
       return new Response(JSON.stringify({ error: "appName is required" }), {

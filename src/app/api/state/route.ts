@@ -113,15 +113,26 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
+      // Merge with any existing record so a partial save (e.g. just state, or an
+      // install with no html yet) does not wipe icon/html/pos written earlier.
+      const prev = readJSON<Surface | null>(
+        path.join(SURFACES, sid + ".json"),
+        null,
+      );
+      // Per field: present in the payload -> use it (including explicit null);
+      // absent -> keep the prior value. Lets a save clear state while another
+      // save that omits html/icon preserves them.
+      const has = (k: string) => Object.prototype.hasOwnProperty.call(s, k);
       const record: Surface = {
         kind: s.kind,
         id: sid,
         name: s.name,
-        description: s.description || "",
-        state: typeof s.state === "string" ? s.state : null,
-        html: typeof s.html === "string" ? s.html : null,
-        pos: s.pos,
-        size: s.size,
+        description: has("description") ? s.description || "" : prev?.description || "",
+        state: has("state") ? (typeof s.state === "string" ? s.state : null) : (prev?.state ?? null),
+        html: has("html") ? (typeof s.html === "string" ? s.html : null) : (prev?.html ?? null),
+        icon: has("icon") ? (typeof s.icon === "string" ? s.icon : null) : (prev?.icon ?? null),
+        pos: has("pos") ? s.pos : prev?.pos,
+        size: has("size") ? s.size : prev?.size,
         updatedAt: now,
       };
       fs.writeFileSync(

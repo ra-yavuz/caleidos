@@ -101,6 +101,20 @@ The host injects an object \`window.caleidos\` your script can call:
     sizes itself instead of being boxed: the host fits the surface to you. E.g. a
     calculator might call caleidos.resize(320, 440).
 
+- caleidos.setIcon(icon)
+    Give this app its dock/launcher icon. Call once on load. \`icon\` is EITHER a
+    single emoji (e.g. "calculator" widgets might use a number-pad emoji) OR a
+    small inline SVG string (e.g. "<svg viewBox='0 0 24 24'>...</svg>", no width/
+    height attrs so it scales). Make it distinctive and recognizable for the app
+    so its dock tile is not generic. Prefer a crisp inline SVG.
+
+- caleidos.install(appSpec)
+    Ask the OS to install a NEW app (this is how an app like an app store creates
+    other apps). \`appSpec\` is { name, description, icon } where icon is an emoji
+    or inline SVG. The OS registers it instantly (it appears in the dock and app
+    menu); its component is generated the first time the user opens it. Use this
+    only for explicit install actions, never for routine interaction.
+
 - caleidos.fetchData(spec) -> Promise
     Request external data through the host (the component itself has no network).
     Only two spec kinds are supported; do NOT invent others:
@@ -180,6 +194,12 @@ export const BRIDGE_SCRIPT = `
     },
     resize: function (w, h) {
       parent.postMessage({ type: 'CALEIDOS_RESIZE', w: w | 0, h: h | 0 }, '*');
+    },
+    setIcon: function (icon) {
+      parent.postMessage({ type: 'CALEIDOS_ICON', icon: String(icon || '') }, '*');
+    },
+    install: function (appSpec) {
+      parent.postMessage({ type: 'CALEIDOS_INSTALL', app: appSpec }, '*');
     },
     fetchData: function (spec) {
       var id = 'f' + (++seq);
@@ -269,3 +289,48 @@ no prose) mapping these exact keys to CSS values:
     "menubar": "#...", "menubarText": "#..." }
 Pick a coherent, tasteful palette. Output ONLY the JSON object.
 `.trim();
+
+// Prompt for the infinite App Store: a search term comes in, the model returns a
+// JSON ARRAY of plausible app listings. There is ALWAYS something to return -
+// the inventory is imaginary and unlimited, so never return an empty list.
+export const APPSTORE_PROMPT = `
+You are the catalog engine for the caleiDOS App Store, an app store from another
+dimension with infinite inventory. Given the user's search query, invent a list
+of plausible, appealing apps that match it. The inventory is imaginary and
+unlimited: ALWAYS return apps, NEVER an empty list, never "no results".
+
+Output ONLY a JSON array (no markdown, no prose) of 6 to 10 objects, each:
+  { "name": "Short App Name",
+    "description": "one enticing sentence about what it does",
+    "icon": "<emoji or a small inline <svg viewBox='0 0 24 24'>...</svg>>" }
+
+Make the names creative and varied, the descriptions specific, the icons
+distinct. If the query is vague, interpret it generously. Output ONLY the JSON
+array.
+`.trim();
+
+// Prompt for the AI browser: an address-bar query / URL comes in, the model
+// renders a full PAGE as a self-contained component. Reuses the component
+// contract (own JS, host bridge) PLUS it may navigate via caleidos.requestChange
+// (the browser frame re-renders the page for a new query). No real web; the page
+// is generated, so there are no X-Frame-Options problems.
+export const PAGE_PROMPT = (UI_CONTRACT_PROMPT +
+  `
+
+# You are rendering a BROWSER PAGE
+
+You are the web of another dimension. Given an address-bar query or a URL, render
+a believable, rich, self-contained web PAGE for it as the component (full HTML+
+CSS+JS document, same rules as above). It should look like a real site for that
+query (a search results page, an article, a shop, a profile, whatever fits).
+
+Links and navigation inside the page: when the user clicks a link or submits a
+search, call caleidos.requestChange("<the new address or query>") so the browser
+re-renders the next page. Do NOT use real <a href> navigation. Make in-page links
+elements with your own click handlers that call caleidos.requestChange.
+
+Fill the full surface; call caleidos.resize to a generous page size (e.g.
+caleidos.resize(900, 600)). Give the page its own look; the browser chrome
+(address bar, back button) is provided by the OS around you, so do not draw a
+fake address bar.`
+).trim();
